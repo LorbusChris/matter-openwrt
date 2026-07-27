@@ -1,0 +1,47 @@
+From fa9981d6f62ad77338d740def855d2e3e94bc4de Mon Sep 17 00:00:00 2001
+From: Christian Glombek <c.glombek@cosa.systems>
+Date: Mon, 27 Jul 2026 07:22:34 +0200
+Subject: [PATCH] [ncp] refresh the cached active dataset on unsolicited
+ changes
+
+SPINEL_PROP_THREAD_ACTIVE_DATASET_TLVS is handled in
+HandleResponseForPropSet but not in HandleValueIs, so the cached active
+dataset is only refreshed when otbr sets it itself. When the NCP changes it
+on its own the cache goes stale, and every consumer of
+GetDatasetActiveTlvs() keeps reporting the superseded network.
+
+The clearest case is a pending dataset being applied: the delay timer
+expires on the NCP, the network moves to the new channel or credentials,
+and otbr never notices.
+
+Handle the property in HandleValueIs too, parsing it exactly as the
+response path does.
+
+Assisted-By: Claude Opus 5
+---
+ src/host/ncp_spinel.cpp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/src/host/ncp_spinel.cpp b/src/host/ncp_spinel.cpp
+index ce055427..21a6df2e 100644
+--- a/src/host/ncp_spinel.cpp
++++ b/src/host/ncp_spinel.cpp
+@@ -481,6 +481,18 @@ void NcpSpinel::HandleValueIs(spinel_prop_key_t aKey, const uint8_t *aBuffer, ui
+         break;
+     }
+ 
++    case SPINEL_PROP_THREAD_ACTIVE_DATASET_TLVS:
++    {
++        otOperationalDatasetTlvs datasetTlvs = {};
++
++        // The active dataset also changes without otbr asking for it, most
++        // notably when a pending dataset is applied at the end of a migration.
++        VerifyOrExit(ParseOperationalDatasetTlvs(aBuffer, aLength, datasetTlvs) == OT_ERROR_NONE,
++                     error = OTBR_ERROR_PARSE);
++        mPropsObserver->SetDatasetActiveTlvs(datasetTlvs);
++        break;
++    }
++
+     case SPINEL_PROP_IPV6_ADDRESS_TABLE:
+     {
+         std::vector<Ip6AddressInfo> addressInfoTable;

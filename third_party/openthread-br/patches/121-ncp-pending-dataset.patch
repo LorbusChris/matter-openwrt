@@ -1,0 +1,160 @@
+From b8887bbb4df4b81dcc85a2aed0bdcac78e0eab6d Mon Sep 17 00:00:00 2001
+From: Christian Glombek <c.glombek@cosa.systems>
+Date: Mon, 27 Jul 2026 07:22:47 +0200
+Subject: [PATCH] [ncp] implement the pending dataset under NCP mode
+
+NcpNetworkProperties::GetDatasetPendingTlvs() was a stub, so under NCP the
+pending dataset always read as empty. Anything reporting a scheduled
+migration, such as the ubus status method, could not see one.
+
+Cache it alongside the active dataset: add SetDatasetPendingTlvs() to
+PropsObserver, handle SPINEL_PROP_THREAD_PENDING_DATASET_TLVS both as an
+unsolicited change and as a property get response, and fetch it once at init
+since otbr never sets it itself and would otherwise start with an empty
+cache.
+
+The write side already worked in NCP mode through
+NcpSpinel::DatasetMgmtSetPending(), so this makes the read side match.
+
+Assisted-By: Claude Opus 5
+---
+ src/host/ncp_host.cpp   | 15 +++++++++++++--
+ src/host/ncp_host.hpp   |  2 ++
+ src/host/ncp_spinel.cpp | 32 ++++++++++++++++++++++++++++++++
+ src/host/ncp_spinel.hpp |  7 +++++++
+ 4 files changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/src/host/ncp_host.cpp b/src/host/ncp_host.cpp
+index ebf1a452..619dba9c 100644
+--- a/src/host/ncp_host.cpp
++++ b/src/host/ncp_host.cpp
+@@ -30,6 +30,7 @@
+ 
+ #include "ncp_host.hpp"
+ 
++#include <algorithm>
+ #include <memory>
+ 
+ #include <openthread/error.h>
+@@ -53,6 +54,7 @@ NcpNetworkProperties::NcpNetworkProperties(void)
+     : mDeviceRole(OT_DEVICE_ROLE_DISABLED)
+ {
+     memset(&mDatasetActiveTlvs, 0, sizeof(mDatasetActiveTlvs));
++    memset(&mDatasetPendingTlvs, 0, sizeof(mDatasetPendingTlvs));
+     SetMeshLocalPrefix(kMeshLocalPrefixInit);
+ }
+ 
+@@ -90,10 +92,19 @@ void NcpNetworkProperties::GetDatasetActiveTlvs(otOperationalDatasetTlvs &aDatas
+     memcpy(aDatasetTlvs.mTlvs, mDatasetActiveTlvs.mTlvs, mDatasetActiveTlvs.mLength);
+ }
+ 
++void NcpNetworkProperties::SetDatasetPendingTlvs(const otOperationalDatasetTlvs &aPendingOpDatasetTlvs)
++{
++    // mLength is validated at parse time, but it is a uint8_t and the TLV
++    // buffer holds 254 bytes; clamp rather than trust the invariant.
++    mDatasetPendingTlvs.mLength =
++        static_cast<uint8_t>(std::min<size_t>(aPendingOpDatasetTlvs.mLength, sizeof(mDatasetPendingTlvs.mTlvs)));
++    memcpy(mDatasetPendingTlvs.mTlvs, aPendingOpDatasetTlvs.mTlvs, mDatasetPendingTlvs.mLength);
++}
++
+ void NcpNetworkProperties::GetDatasetPendingTlvs(otOperationalDatasetTlvs &aDatasetTlvs) const
+ {
+-    // TODO: Implement the method under NCP mode.
+-    OTBR_UNUSED_VARIABLE(aDatasetTlvs);
++    aDatasetTlvs.mLength = mDatasetPendingTlvs.mLength;
++    memcpy(aDatasetTlvs.mTlvs, mDatasetPendingTlvs.mTlvs, mDatasetPendingTlvs.mLength);
+ }
+ 
+ void NcpNetworkProperties::SetMeshLocalPrefix(const otMeshLocalPrefix &aMeshLocalPrefix)
+diff --git a/src/host/ncp_host.hpp b/src/host/ncp_host.hpp
+index 45ad7aea..1e71f30d 100644
+--- a/src/host/ncp_host.hpp
++++ b/src/host/ncp_host.hpp
+@@ -70,10 +70,12 @@ private:
+     // PropsObserver methods
+     void SetDeviceRole(otDeviceRole aRole) override;
+     void SetDatasetActiveTlvs(const otOperationalDatasetTlvs &aActiveOpDatasetTlvs) override;
++    void SetDatasetPendingTlvs(const otOperationalDatasetTlvs &aPendingOpDatasetTlvs) override;
+     void SetMeshLocalPrefix(const otMeshLocalPrefix &aMeshLocalPrefix) override;
+ 
+     otDeviceRole             mDeviceRole;
+     otOperationalDatasetTlvs mDatasetActiveTlvs;
++    otOperationalDatasetTlvs mDatasetPendingTlvs;
+     otMeshLocalPrefix        mMeshLocalPrefix;
+ };
+ 
+diff --git a/src/host/ncp_spinel.cpp b/src/host/ncp_spinel.cpp
+index 21a6df2e..3f35bcba 100644
+--- a/src/host/ncp_spinel.cpp
++++ b/src/host/ncp_spinel.cpp
+@@ -79,6 +79,18 @@ void NcpSpinel::Init(ot::Spinel::SpinelDriver &aSpinelDriver, PropsObserver &aOb
+     mPropsObserver = &aObserver;
+     mIid           = mSpinelDriver->GetIid();
+     mSpinelDriver->SetFrameHandler(&HandleReceivedFrame, &HandleSavedFrame, this);
++
++    // Get the pending dataset to have an initial value. Unlike the active
++    // dataset, otbr never sets it itself, so without this the cache would stay
++    // empty until the NCP next reports a change.
++    {
++        otError error = GetProperty(SPINEL_PROP_THREAD_PENDING_DATASET_TLVS);
++
++        if (error != OT_ERROR_NONE)
++        {
++            otbrLogWarning("Failed to get the pending dataset, %s", otThreadErrorToString(error));
++        }
++    }
+ }
+ 
+ void NcpSpinel::Deinit(void)
+@@ -493,6 +505,16 @@ void NcpSpinel::HandleValueIs(spinel_prop_key_t aKey, const uint8_t *aBuffer, ui
+         break;
+     }
+ 
++    case SPINEL_PROP_THREAD_PENDING_DATASET_TLVS:
++    {
++        otOperationalDatasetTlvs datasetTlvs = {};
++
++        VerifyOrExit(ParseOperationalDatasetTlvs(aBuffer, aLength, datasetTlvs) == OT_ERROR_NONE,
++                     error = OTBR_ERROR_PARSE);
++        mPropsObserver->SetDatasetPendingTlvs(datasetTlvs);
++        break;
++    }
++
+     case SPINEL_PROP_IPV6_ADDRESS_TABLE:
+     {
+         std::vector<Ip6AddressInfo> addressInfoTable;
+@@ -878,6 +900,16 @@ otbrError NcpSpinel::HandleResponseForPropGet(spinel_tid_t      aTid,
+         break;
+     }
+ 
++    case SPINEL_PROP_THREAD_PENDING_DATASET_TLVS:
++    {
++        otOperationalDatasetTlvs datasetTlvs = {};
++
++        VerifyOrExit(ParseOperationalDatasetTlvs(aData, aLength, datasetTlvs) == OT_ERROR_NONE,
++                     error = OTBR_ERROR_PARSE);
++        mPropsObserver->SetDatasetPendingTlvs(datasetTlvs);
++        break;
++    }
++
+     default:
+         VerifyOrExit(aKey == mWaitingKeyTable[aTid], error = OTBR_ERROR_INVALID_STATE);
+         break;
+diff --git a/src/host/ncp_spinel.hpp b/src/host/ncp_spinel.hpp
+index 2421b3f4..cfb9aa33 100644
+--- a/src/host/ncp_spinel.hpp
++++ b/src/host/ncp_spinel.hpp
+@@ -86,6 +86,13 @@ public:
+      */
+     virtual void SetDatasetActiveTlvs(const otOperationalDatasetTlvs &aActiveOpDatasetTlvs) = 0;
+ 
++    /**
++     * Updates the pending dataset.
++     *
++     * @param[in] aPendingOpDatasetTlvs  The pending dataset tlvs.
++     */
++    virtual void SetDatasetPendingTlvs(const otOperationalDatasetTlvs &aPendingOpDatasetTlvs) = 0;
++
+     /**
+      * Updates the mesh local prefix.
+      *
