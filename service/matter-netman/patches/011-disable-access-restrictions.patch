@@ -1,0 +1,28 @@
+The network-manager-app enables the Matter 1.4 Access Restriction List, which
+on Linux is backed by ExampleAccessRestrictionProvider from examples/platform.
+That provider is a demonstration: its review handler drops every restriction on
+the fabric that asked for one. Shipping it means the restriction mechanism is
+defeated by invoking the command it exists to gate.
+
+Patch 010 already removes the ReviewFabricRestrictions commands from the data
+model so a controller cannot ask. Turn the feature off in the build as well, so
+the example provider is not compiled in and the Access Control cluster drops
+the restriction handling behind it. The two belong together: 010 stops the
+device advertising the commands, this stops it implementing them with example
+code. Advertising without implementing, or implementing with a stub, are both
+worse than not offering the feature.
+
+A real implementation would need an owner review surface. On a router that is
+the web interface, which is the out-of-band path the specification assumes.
+
+diff --git a/examples/network-manager-app/linux/args.gni b/examples/network-manager-app/linux/args.gni
+index 2213f8fb38..16826f7395 100644
+--- a/examples/network-manager-app/linux/args.gni
++++ b/examples/network-manager-app/linux/args.gni
+@@ -27,5 +27,5 @@ chip_config_network_layer_ble = false
+ chip_enable_wifi = false
+ chip_enable_thread = false
+ 
+-chip_enable_access_restrictions = true
++chip_enable_access_restrictions = false
+ matter_enable_tracing_support = true

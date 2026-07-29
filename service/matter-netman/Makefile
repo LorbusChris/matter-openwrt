@@ -148,11 +148,12 @@ define Build/Compile
 endef
 
 define Package/matter-netman/default/install
-	$(INSTALL_DIR) $(1)/usr/sbin $(1)/usr/share/matter $(1)/etc/init.d $(1)/usr/share/acl.d $(1)/etc/hotplug.d/iface
+	$(INSTALL_DIR) $(1)/usr/sbin $(1)/usr/share/matter $(1)/etc/init.d $(1)/usr/share/acl.d $(1)/etc/hotplug.d/iface $(1)/etc/config
 	$(INSTALL_BIN) $(OUT_DIR)/matter-network-manager-app $(1)/usr/sbin
 	$(INSTALL_DATA) ./files/bootstrap.sh $(1)/usr/share/matter/
 	$(INSTALL_DATA) ./files/matter_acl.json $(1)/usr/share/acl.d
 	$(INSTALL_BIN) ./files/matter.init $(1)/etc/init.d/matter
+	$(INSTALL_CONF) ./files/matter.config $(1)/etc/config/matter
 	$(INSTALL_BIN) ./files/matter.iface-hotplug $(1)/etc/hotplug.d/iface/99-matter
 endef
 
@@ -161,6 +162,7 @@ Package/matter-netman-openssl/install=$(Package/matter-netman/default/install)
 
 define Package/matter-netman/default/conffiles
 $(CONF_DIR)/
+/etc/config/matter
 endef
 
 Package/matter-netman-mbedtls/conffiles=$(Package/matter-netman/default/conffiles)
