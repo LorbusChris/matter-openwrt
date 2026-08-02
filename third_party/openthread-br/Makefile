@@ -41,7 +41,8 @@ PKG_MIRROR_HASH:=2ba2e9aeeeb8c5ee7411f18d3303340bf35817f6c1f12fa35bebeae5974ac45
 PKG_LICENSE:=BSD-3-Clause
 PKG_LICENSE_FILES:=LICENSE
 
-PKG_CONFIG_DEPENDS:=CONFIG_DEBUG CONFIG_OPENTHREADBR_SHARED_MBEDTLS
+PKG_CONFIG_DEPENDS:=CONFIG_DEBUG CONFIG_OPENTHREADBR_SHARED_MBEDTLS \
+	CONFIG_MBEDTLS_CCM_C CONFIG_MBEDTLS_KEY_EXCHANGE_ECJPAKE_ENABLED
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -83,12 +84,18 @@ define Package/openthread-br/config
 if PACKAGE_openthread-br || PACKAGE_openthread-br-avahi
 config OPENTHREADBR_SHARED_MBEDTLS
 	bool "Use shared mbedTLS library for OpenThread"
+	select MBEDTLS_CCM_C
+	select MBEDTLS_KEY_EXCHANGE_ECJPAKE_ENABLED
 	default n
 	help
 	  Use the shared mbedTLS library provided by the libmbedtls package,
 	  instead of statically linking the copy bundled with OpenThread.
-	  This saves around 200kB of flash, but libmbedtls must be compiled
-	  with MBEDTLS_KEY_EXCHANGE_ECJPAKE_ENABLED set to Y.
+	  This saves around 200kB of flash. It turns on MBEDTLS_CCM_C and
+	  MBEDTLS_KEY_EXCHANGE_ECJPAKE_ENABLED, which OpenWrt leaves off.
+	  Commissioning negotiates TLS-ECJPAKE-WITH-AES-128-CCM-8, the only
+	  EC-JPAKE cipher suite mbedTLS has, and its table entry needs both
+	  of these as well as AES, so with either missing the library is
+	  built without the one suite the handshake will offer.
 endif
 endef
 
