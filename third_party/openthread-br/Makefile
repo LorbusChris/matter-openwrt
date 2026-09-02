@@ -57,7 +57,7 @@ define Package/openthread-br/Default
   CATEGORY:=Network
   TITLE:=OpenThread Border Router
   URL:=https://github.com/openthread/ot-br-posix
-  DEPENDS:=+libstdcpp +OPENTHREADBR_SHARED_MBEDTLS:libmbedtls +libjson-c +libubus +libubox +kmod-usb-acm +kmod-tun +jsonfilter
+  DEPENDS:=+libstdcpp +OPENTHREADBR_SHARED_MBEDTLS:libmbedtls +libjson-c +libubus +libubox +libmnl +libnftnl +kmod-nft-core +kmod-nft-nat +kmod-usb-acm +kmod-tun +jsonfilter
 endef
 
 define Package/openthread-br/Default/description
@@ -91,7 +91,15 @@ config OPENTHREADBR_SHARED_MBEDTLS
 endif
 endef
 
-# Disable firewall integration due to https://github.com/openthread/ot-br-posix/issues/1675
+# The OT posix platform firewall (OT_FIREWALL) produces ipset/ip6tables
+# rules, which nftables-based OpenWrt does not run, so it stays off - the
+# original reason firewall integration was disabled here
+# (https://github.com/openthread/ot-br-posix/issues/1675). OTBR_NFTABLES
+# is that issue delivered: otbr-agent installs the Thread ingress filter
+# and the NAT44 masquerade in-process, through nftables in an isolated
+# table. It needs nf_tables kernel support at runtime (kmod-nft-core,
+# kmod-nft-nat): with the backend compiled in, a failed firewall install
+# aborts the agent rather than silently forwarding unfiltered traffic.
 CMAKE_OPTIONS+= \
 	-DOTBR_GIT_VERSION=$(call GitWithMetadata/resolve,OTBR_GIT_VERSION)$(if $(PKG_RELEASE),-r$(PKG_RELEASE)) \
 	-DOT_PACKAGE_VERSION=$(call GitWithMetadata/resolve,OT_GIT_VERSION) \
@@ -103,6 +111,7 @@ CMAKE_OPTIONS+= \
 	-DOTBR_BORDER_AGENT=ON \
 	-DOTBR_BORDER_ROUTING=ON \
 	-DOTBR_NAT64=OFF \
+	-DOTBR_NFTABLES=ON \
 	-DOTBR_SETTINGS_FILE_USE_INTERFACE_NAME=ON \
 	-DOT_POSIX_SETTINGS_PATH=\"/etc/openthread\" \
 	-DOT_FIREWALL=OFF \
@@ -121,8 +130,9 @@ endif
 CMAKE_OPTIONS+= -DOTBR_MDNS=mDNSResponder
 
 define Package/openthread-br/install
-	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/config $(1)/etc/uci-defaults $(1)/etc/hotplug.d/usb
+	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/config $(1)/etc/uci-defaults $(1)/etc/hotplug.d/usb $(1)/usr/share/otbr
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/otbr-agent $(1)/usr/sbin
+	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/share/otbr/nftables-backend $(1)/usr/share/otbr
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/ot-ctl $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/otbr-rcp $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/otbr-agent.init $(1)/etc/init.d/otbr-agent
